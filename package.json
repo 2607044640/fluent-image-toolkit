@@ -1,0 +1,16 @@
+{
+  "name": "fluent-image-toolkit",
+  "version": "1.4.4",
+  "description": "Hover image + Ctrl+C to copy image to clipboard; click to preview with zoom, move, rotate, flip, invert, and copy.",
+  "main": "main.js",
+  "keywords": [
+    "obsidian",
+    "image",
+    "toolkit",
+    "clipboard",
+    "preview",
+    "zoom"
+  ],
+  "author": "Jeff1024",
+  "license": "MIT"
+}
