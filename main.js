@@ -3507,12 +3507,49 @@ class ImageToolkitPlugin extends obsidian.Plugin {
             return foundView;
         };
 
+        this.resolveTargetImg = (doc) => {
+            if (this.hoveredImg && this.hoveredImg.isConnected) return this.hoveredImg;
+            const d = doc || document;
+            if (typeof this.lastMouseX === 'number' && typeof this.lastMouseY === 'number') {
+                const el = d.elementFromPoint(this.lastMouseX, this.lastMouseY);
+                if (el) {
+                    if (el.tagName === 'IMG') return el;
+                    if (el.closest?.('.oit-floating-zoom-btn') && this.currentZoomTargetImg?.isConnected) {
+                        return this.currentZoomTargetImg;
+                    }
+                    const ie = el.closest?.('.internal-embed.image-embed');
+                    if (ie) {
+                        const img = ie.querySelector('img');
+                        if (img) return img;
+                    }
+                    const block = el.closest?.('.cm-embed-block');
+                    if (block) {
+                        const imgs = Array.from(block.querySelectorAll('img'));
+                        if (imgs.length === 1) return imgs[0];
+                        if (imgs.length > 1) {
+                            let best = null, bestDist = Infinity;
+                            for (const candidate of imgs) {
+                                const r = candidate.getBoundingClientRect();
+                                const dy = this.lastMouseY < r.top ? r.top - this.lastMouseY : (this.lastMouseY > r.bottom ? this.lastMouseY - r.bottom : 0);
+                                const dx = this.lastMouseX < r.left ? r.left - this.lastMouseX : (this.lastMouseX > r.right ? this.lastMouseX - r.right : 0);
+                                const dist = dy * 10 + dx;
+                                if (dist < bestDist) { bestDist = dist; best = candidate; }
+                            }
+                            if (best) return best;
+                        }
+                    }
+                }
+            }
+            return null;
+        };
+
         this.removeImageFromEditor = (targetImg, targetView, linkpath) => {
             const view = targetView || this.getViewForElement(targetImg) || this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
             if (!view) return false;
 
-            const embed = targetImg?.closest ? targetImg.closest('.internal-embed, .cm-embed-block') : null;
-            let embedSrc = embed ? (embed.getAttribute('src') || '') : '';
+            const internalEmbed = targetImg?.closest ? targetImg.closest('.internal-embed') : null;
+            const embed = internalEmbed || (targetImg?.closest ? targetImg.closest('.cm-embed-block') : null);
+            let embedSrc = internalEmbed ? (internalEmbed.getAttribute('src') || '') : '';
             if (!embedSrc && targetImg) {
                 const raw = targetImg.getAttribute('src') || targetImg.src || '';
                 embedSrc = decodeURIComponent(raw.split('/').pop().split('?')[0]);
@@ -3522,29 +3559,21 @@ class ImageToolkitPlugin extends obsidian.Plugin {
 
             if (view.editor) {
                 const editor = view.editor;
-                // 1. If active selection is image embed, delete selection directly
-                if (editor.somethingSelected() && ImgUtil.parseImageEmbed(editor.getSelection())) {
-                    editor.replaceSelection('');
-                    if (this.hoveredImg === targetImg) this.hoveredImg = null;
-                    this.hideFloatingZoomBtn();
-                    return true;
-                }
-
-                // 2. Locate line using CodeMirror 6 posAtDOM with adjacent/cursor line probe
+                // Locate the exact single line matching targetImg/embedSrc (never delete an entire multi-line .cm-embed-block selection)
                 let targetLine = -1;
                 const cm = editor.cm || editor.editor?.cm;
                 if (cm && typeof cm.posAtDOM === 'function' && targetImg) {
                     try {
-                        const pos = cm.posAtDOM(embed || targetImg);
+                        const pos = cm.posAtDOM(internalEmbed || targetImg);
                         if (typeof pos === 'number' && pos >= 0) targetLine = editor.offsetToPos(pos).line;
                     } catch (e) {}
                 }
 
                 const matches = (txt) => (embedSrc && txt.includes(embedSrc)) || (filename && txt.includes(filename));
-                let foundLine = [targetLine, targetLine - 1, targetLine + 1, editor.getCursor().line]
+                let foundLine = [targetLine, targetLine - 1, targetLine + 1, targetLine + 2, editor.getCursor().line]
                     .find(l => l >= 0 && l < editor.lineCount() && matches(editor.getLine(l)));
 
-                if (foundLine === undefined) {
+                if (foundLine === undefined && (embedSrc || filename)) {
                     for (let i = 0; i < editor.lineCount(); i++) {
                         if (matches(editor.getLine(i))) { foundLine = i; break; }
                     }
@@ -3556,11 +3585,24 @@ class ImageToolkitPlugin extends obsidian.Plugin {
                         const from = { line: foundLine, ch: 0 };
                         const to = foundLine < editor.lineCount() - 1 ? { line: foundLine + 1, ch: 0 } : { line: foundLine, ch: lineText.length };
                         editor.replaceRange('', from, to);
+                        editor.setCursor(from);
                     } else {
                         const esc = (embedSrc || filename).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                         const m = lineText.match(new RegExp(`!\\[\\[[^\\]]*${esc}[^\\]]*\\]\\]|!\\[[^\\]]*\\]\\([^)]*${esc}[^)]*\\)`));
-                        if (m) editor.replaceRange('', { line: foundLine, ch: m.index }, { line: foundLine, ch: m.index + m[0].length });
+                        if (m) {
+                            const from = { line: foundLine, ch: m.index };
+                            editor.replaceRange('', from, { line: foundLine, ch: m.index + m[0].length });
+                            editor.setCursor(from);
+                        }
                     }
+                    if (this.hoveredImg === targetImg) this.hoveredImg = null;
+                    this.hideFloatingZoomBtn();
+                    return true;
+                }
+
+                // Fallback only if no specific embedSrc/filename matched and a single-line image embed is selected
+                if (editor.somethingSelected() && ImgUtil.parseImageEmbed(editor.getSelection())) {
+                    editor.replaceSelection('');
                     if (this.hoveredImg === targetImg) this.hoveredImg = null;
                     this.hideFloatingZoomBtn();
                     return true;
@@ -3585,20 +3627,23 @@ class ImageToolkitPlugin extends obsidian.Plugin {
         };
 
         this.handleImageCut = (event, win) => {
-            const targetView = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView) || this.getViewForElement(this.hoveredImg);
+            const doc = win?.document || document;
+            let targetImg = this.resolveTargetImg(doc);
+            const targetView = this.getViewForElement(targetImg) || this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
             const editor = targetView?.editor;
             const winSel = (win.getSelection ? win.getSelection() : window.getSelection())?.toString().trim() || '';
 
-            let targetImg = null;
             let linkpath = null;
 
-            if (this.hoveredImg && this.hoveredImg.isConnected) {
-                if (winSel && !ImgUtil.parseImageEmbed(winSel)) return; // User selected normal text; let native cut handle it
-                targetImg = this.hoveredImg;
+            if (targetImg && targetImg.isConnected) {
+                if (winSel && !ImgUtil.isOnlyImageEmbeds(winSel)) return; // User selected normal prose text; let native cut handle it
+                const ie = targetImg.closest?.('.internal-embed');
+                linkpath = ie?.getAttribute('src') || null;
             } else if (editor) {
                 const sel = editor.somethingSelected() ? editor.getSelection().trim() : '';
-                const line = !sel ? editor.getLine(editor.getCursor().line).trim() : '';
-                linkpath = ImgUtil.parseImageEmbed(sel) || ImgUtil.parseImageEmbed(line);
+                if (sel && !ImgUtil.isOnlyImageEmbeds(sel)) return;
+                const cursorLine = editor.getLine(editor.getCursor().line).trim();
+                linkpath = ImgUtil.parseImageEmbed(cursorLine) || ImgUtil.parseFirstImageEmbed(sel);
                 if (!linkpath) return; // Not targeting an image
             } else {
                 return;
@@ -3640,14 +3685,31 @@ class ImageToolkitPlugin extends obsidian.Plugin {
             this.bindHoverCopy = (doc, win) => {
                 if (!doc) doc = document;
                 if (!win) win = doc.defaultView || window;
+                this.registerDomEvent(doc, 'mousemove', (event) => {
+                    this.lastMouseX = event.clientX;
+                    this.lastMouseY = event.clientY;
+                }, { capture: true, passive: true });
                 this.registerDomEvent(doc, 'mouseover', (event) => {
                     const target = event.target;
-                    if (target && target.tagName === 'IMG') {
+                    if (!target) return;
+                    if (target.tagName === 'IMG') {
                         this.hoveredImg = target;
+                    } else if (target.closest?.('.oit-floating-zoom-btn') && this.currentZoomTargetImg?.isConnected) {
+                        this.hoveredImg = this.currentZoomTargetImg;
+                    } else {
+                        const ie = target.closest?.('.internal-embed.image-embed');
+                        if (ie) {
+                            const img = ie.querySelector('img');
+                            if (img) this.hoveredImg = img;
+                        }
                     }
                 }, { capture: true });
                 this.registerDomEvent(doc, 'mouseout', (event) => {
                     const target = event.target;
+                    const related = event.relatedTarget;
+                    if (related && (related.closest?.('.oit-floating-zoom-btn') || (this.hoveredImg && related.closest?.('.internal-embed.image-embed')?.contains(this.hoveredImg)))) {
+                        return;
+                    }
                     if (this.hoveredImg === target) {
                         this.hoveredImg = null;
                     }
@@ -3655,15 +3717,29 @@ class ImageToolkitPlugin extends obsidian.Plugin {
                 this.registerDomEvent(win, 'keydown', (event) => {
                     if (event.repeat) return;
                     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === 'c' || event.key === 'C')) {
-                        if (this.hoveredImg && this.hoveredImg.isConnected) {
-                            const sel = (win.getSelection ? win.getSelection() : window.getSelection())?.toString().trim() || '';
-                            const isImageWikiLink = sel.startsWith('![[') && sel.endsWith(']]');
-                            if (sel.length > 0 && !isImageWikiLink) {
-                                return;
+                        const sel = (win.getSelection ? win.getSelection() : window.getSelection())?.toString().trim() || '';
+                        if (sel.length > 0 && !ImgUtil.isOnlyImageEmbeds(sel)) {
+                            return;
+                        }
+                        let targetImg = this.resolveTargetImg(doc);
+                        if (!targetImg) {
+                            const activeView = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
+                            const ed = activeView?.editor;
+                            if (ed) {
+                                const edSel = ed.somethingSelected() ? ed.getSelection().trim() : '';
+                                if (!edSel || ImgUtil.isOnlyImageEmbeds(edSel)) {
+                                    const link = ImgUtil.parseImageEmbed(ed.getLine(ed.getCursor().line).trim()) || ImgUtil.parseFirstImageEmbed(edSel);
+                                    if (link && activeView?.contentEl) {
+                                        const clean = link.split('/').pop().trim();
+                                        targetImg = activeView.contentEl.querySelector(`img[src*="${encodeURI(clean)}"], img[src*="${clean}"]`);
+                                    }
+                                }
                             }
+                        }
+                        if (targetImg && targetImg.isConnected) {
                             event.preventDefault();
                             event.stopPropagation();
-                            ImgUtil.copyImage(this.hoveredImg);
+                            ImgUtil.copyImage(targetImg);
                         }
                     }
                     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === 'x' || event.key === 'X')) {
