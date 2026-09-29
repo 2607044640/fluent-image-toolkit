@@ -1036,6 +1036,19 @@ class ImgUtil {
         if (md) return decodeURIComponent(md[2].trim());
         return null;
     }
+    static isOnlyImageEmbeds(text) {
+        if (!text) return true;
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        return lines.length > 0 && lines.every(l => !!ImgUtil.parseImageEmbed(l));
+    }
+    static parseFirstImageEmbed(text) {
+        if (!text) return null;
+        for (const line of text.split(/\r?\n/)) {
+            const parsed = ImgUtil.parseImageEmbed(line.trim());
+            if (parsed) return parsed;
+        }
+        return null;
+    }
     static copyImage(imgEle, width, height, noticeMsg) {
         if (!imgEle) return;
         const now = Date.now();
