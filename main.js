@@ -159,7 +159,8 @@ var en = {
     COPY_IMAGE_SUCCESS: 'Copy the image successfully!',
     COPY_IMAGE_ERROR: 'Fail to copy the image!',
     CUT_IMAGE_SUCCESS: 'Cut the image successfully!',
-    CUT_IMAGE_ERROR: 'Fail to cut the image!'
+    CUT_IMAGE_ERROR: 'Fail to cut the image!',
+    DELETE_IMAGE_SUCCESS: 'Delete the image successfully!'
 };
 
 // 简体中文
@@ -279,7 +280,8 @@ var zhCN = {
     COPY_IMAGE_SUCCESS: '拷贝图片成功！',
     COPY_IMAGE_ERROR: '拷贝图片失败！',
     CUT_IMAGE_SUCCESS: '剪切图片成功！',
-    CUT_IMAGE_ERROR: '剪切图片失败！'
+    CUT_IMAGE_ERROR: '剪切图片失败！',
+    DELETE_IMAGE_SUCCESS: '删除图片成功！'
 };
 
 // 繁體中文
@@ -297,7 +299,8 @@ var zhTW = {
     COPY: '複製',
     COPY_IMAGE_SUCCESS: '成功複製圖片！',
     CUT_IMAGE_SUCCESS: '成功剪下圖片！',
-    CUT_IMAGE_ERROR: '剪下圖片失敗！'
+    CUT_IMAGE_ERROR: '剪下圖片失敗！',
+    DELETE_IMAGE_SUCCESS: '成功刪除圖片！'
 };
 
 const localeMap = {
@@ -3726,6 +3729,48 @@ class ImageToolkitPlugin extends obsidian.Plugin {
                 }
             }
         };
+
+        this.handleImageDelete = (event, win) => {
+            const doc = win?.document || document;
+            if (doc.activeElement && (doc.activeElement.tagName === 'INPUT' || doc.activeElement.tagName === 'TEXTAREA')) {
+                return;
+            }
+            let targetImg = this.resolveTargetImg(doc);
+            const targetView = this.getViewForElement(targetImg) || this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
+            const editor = targetView?.editor;
+
+            let linkpath = null;
+
+            if (targetImg && targetImg.isConnected) {
+                const domSel = win?.getSelection ? win.getSelection() : window.getSelection();
+                const selStr = domSel ? domSel.toString().trim() : '';
+                const isRealProseSelection = domSel && !domSel.isCollapsed && selStr.length > 0 && !ImgUtil.isOnlyImageEmbeds(selStr);
+                if (isRealProseSelection) return; // User selected actual prose text; let native Delete handle it
+                const ie = targetImg.closest?.('.internal-embed');
+                linkpath = ie?.getAttribute('src') || null;
+            } else if (editor) {
+                const sel = editor.somethingSelected() ? editor.getSelection().trim() : '';
+                if (sel && !ImgUtil.isOnlyImageEmbeds(sel)) return;
+                const cursorLine = editor.getLine(editor.getCursor().line).trim();
+                linkpath = ImgUtil.parseImageEmbed(cursorLine) || ImgUtil.parseFirstImageEmbed(sel);
+                if (!linkpath) return; // Not targeting an image
+            } else {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (linkpath && !targetImg && targetView?.contentEl) {
+                const clean = linkpath.split('/').pop().trim();
+                targetImg = targetView.contentEl.querySelector(`img[src*="${encodeURI(clean)}"], img[src*="${clean}"]`);
+            }
+
+            const removed = this.removeImageFromEditor(targetImg, targetView, linkpath);
+            if (removed) {
+                new obsidian.Notice(t('DELETE_IMAGE_SUCCESS'));
+            }
+        };
     }
     onload() {
         this.addSettingTab(new ImageToolkitSettingTab(this.app, this));
@@ -3800,6 +3845,9 @@ class ImageToolkitPlugin extends obsidian.Plugin {
                     }
                     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === 'x' || event.key === 'X')) {
                         this.handleImageCut(event, win);
+                    }
+                    if (event.key === 'Delete' && !event.altKey && !event.ctrlKey && !event.metaKey) {
+                        this.handleImageDelete(event, win);
                     }
                 }, { capture: true });
             };
