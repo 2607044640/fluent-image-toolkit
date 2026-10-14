@@ -1,6 +1,6 @@
 {
   "name": "fluent-image-toolkit",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Hover image + Ctrl+C to copy image to clipboard; click to preview with zoom, move, rotate, flip, invert, and copy.",
   "main": "main.js",
   "keywords": [

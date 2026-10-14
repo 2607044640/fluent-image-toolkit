@@ -1,12 +1,12 @@
 # Fluent Image Toolkit Architecture
 
-**id:** `fluent-image-toolkit` · **class:** `ImageToolkitPlugin` (`main.js`) · **manifest:** v1.4.4, `minAppVersion` 1.8.7, `isDesktopOnly: true`
+**id:** `fluent-image-toolkit` · **class:** `ImageToolkitPlugin` (`main.js`) · **manifest:** v1.4.5, `minAppVersion` 1.8.7, `isDesktopOnly: true`
 
-Community plugin extension of Image Toolkit. Adds instant hover `Ctrl+C` image-to-clipboard copying, `Ctrl+X` cut with embed removal, high-resolution SVG export, and floating zoom capsule button.
+Community plugin extension of Image Toolkit. Adds instant hover `Ctrl+C` image-to-clipboard copying, `Ctrl+X` cut with embed removal, `Delete` key embed removal, high-resolution SVG export, and floating zoom capsule button.
 
 ## Invariants
 
-1. **Standalone Community Architecture**: Published as `fluent-image-toolkit` under `C:\ObsidianPublish\fluent-image-toolkit` with twin junctions to development and active note vaults.
+1. **Standalone Community Architecture**: Published as `fluent-image-toolkit` with twin junctions to development and active note vaults.
 2. **Instant Hover Clipboard (`Ctrl + C` / `Cmd + C`)**:
    - `mouseover` / `mouseout` on `document` tracks the currently hovered `<img>` element into `plugin.hoveredImg`.
    - Global `keydown` with `{ capture: true }` intercepts `Ctrl + C` / `Cmd + C`.
@@ -27,3 +27,6 @@ Community plugin extension of Image Toolkit. Adds instant hover `Ctrl+C` image-t
    - **Single Mutation Pipeline**: Vault `TFile` instances are resolved directly via `app.vault.getResourcePath(file)` and fed through the unified `ImgUtil.copyImage` pipeline.
    - Deletes the image wikilink/embed line from the active note editor via `editor.replaceRange` / `editor.replaceSelection` (or `vault.process` in reading view), removing the image from the note while preserving full `Ctrl + Z` undo history in CodeMirror.
    - Inside the popup preview modal (`ContainerView`), `Ctrl + X` also copies the binary image to clipboard, deletes the source embed from the note, and closes the modal.
+10. **Hover Image Delete (`Delete`) & Precise Embed Disambiguation**:
+    - Global `keydown` with `{ capture: true }` intercepts `Delete` when hovering an image without text selection, directly removing the note embed without touching the clipboard.
+    - **Adjacent & Same-Line Embed Safety**: Token-level regex matching targets only the exact embed matching `targetImg` / `embedSrc` / `filename`. Only deletes the whole line when the line contains strictly one isolated image embed. When multiple images coexist on the same line or within prose text, only the target embed token is replaced, preserving adjacent images and cursor position.

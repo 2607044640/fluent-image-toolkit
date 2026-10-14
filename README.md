@@ -10,6 +10,7 @@ Fluent Image Toolkit streamlines image handling in Obsidian. It introduces insta
 
 - **Hover Image Copy (`Ctrl + C` / `Cmd + C`)**: Hover over any image in reading or editing view and press `Ctrl + C` (`Cmd + C` on macOS) to copy the image bitmap directly to your system clipboard instead of copying raw Markdown wikilinks.
 - **Hover Image Cut (`Ctrl + X` / `Cmd + X`)**: Hover over or select an image and press `Ctrl + X` (`Cmd + X` on macOS) to copy the binary image to your clipboard and remove the image link from the active document. Full undo (`Ctrl + Z`) is preserved.
+- **Hover Image Delete (`Delete`)**: Hover over any image and press `Delete` to remove the image embed directly from your document without overwriting your system clipboard.
 - **Floating Zoom Button**: Displays a compact zoom button at the top-right of images when hovered, allowing you to open the lightbox viewer without hijacking normal text editor clicks.
 - **High-Resolution SVG Rasterization**: SVGs are re-rasterized at 2.5x rendered scale (or at least 2400px) prior to copying, ensuring vector diagrams paste cleanly into desktop apps without Chromium blur.
 - **Dual Clipboard Pipeline**: Simultaneously writes native DIB/bitmap formats via Electron and standard PNG blobs via the Web Clipboard API for compatibility with native desktop software and web tools.
@@ -36,6 +37,7 @@ Fluent Image Toolkit streamlines image handling in Obsidian. It introduces insta
 
 - **Copying an Image**: Move your mouse over any image in your note and press `Ctrl + C` (or `Cmd + C`). A notice confirms the image has been copied to your clipboard.
 - **Cutting an Image**: Move your mouse over an image (or place your cursor on its line) and press `Ctrl + X` (or `Cmd + X`). The image is copied to your clipboard and its Markdown embed is removed from the file.
+- **Deleting an Image**: Move your mouse over an image and press `Delete`. The Markdown embed is removed from the file without modifying your clipboard.
 - **Opening the Viewer**: Click the floating `(+)` icon at the top right of any hovered image.
 - **Viewer Controls**:
   - `Scroll Wheel`: Zoom in and out.
