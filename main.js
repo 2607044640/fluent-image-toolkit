@@ -3599,21 +3599,59 @@ class ImageToolkitPlugin extends obsidian.Plugin {
             if (!embedSrc && linkpath) embedSrc = linkpath;
             const filename = embedSrc ? embedSrc.split('/').pop().trim() : '';
 
+            // Build list of target candidate strings for robust matching (encoded/decoded)
+            const rawTarget = embedSrc || filename || '';
+            const decodedTarget = rawTarget ? decodeURIComponent(rawTarget) : '';
+            const encodedTarget = rawTarget ? encodeURI(rawTarget) : '';
+            const targetCandidates = Array.from(new Set([
+                rawTarget,
+                decodedTarget,
+                encodedTarget,
+                filename,
+                decodeURIComponent(filename || ''),
+                encodeURI(filename || '')
+            ])).filter(s => s && s.length > 0);
+
+            const escTargets = targetCandidates.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+            const targetEmbedRegexStr = escTargets
+                ? `!\\[\\[[^\\]\\r\\n]*(?:${escTargets})[^\\]\\r\\n]*\\]\\]|!\\[[^\\]\\r\\n]*\\]\\([^)\\r\\n]*(?:${escTargets})[^)\\r\\n]*\\)`
+                : `!\\[\\[[^\\]\\r\\n]+\\]\\]|!\\[[^\\]\\r\\n]*\\]\\([^)\\r\\n]+\\)`;
+            const singleIsolatedRegex = new RegExp(`^\\s*(?:${targetEmbedRegexStr})\\s*$`);
+
             if (view.editor) {
                 const editor = view.editor;
                 // Locate the exact single line matching targetImg/embedSrc (never delete an entire multi-line .cm-embed-block selection)
                 let targetLine = -1;
+                let targetPos = null;
                 const cm = editor.cm || editor.editor?.cm;
                 if (cm && typeof cm.posAtDOM === 'function' && targetImg) {
                     try {
                         const pos = cm.posAtDOM(internalEmbed || targetImg);
-                        if (typeof pos === 'number' && pos >= 0) targetLine = editor.offsetToPos(pos).line;
+                        if (typeof pos === 'number' && pos >= 0) {
+                            targetPos = editor.offsetToPos(pos);
+                            targetLine = targetPos.line;
+                        }
                     } catch (e) {}
                 }
 
-                const matches = (txt) => (embedSrc && txt.includes(embedSrc)) || (filename && txt.includes(filename));
-                let foundLine = [targetLine, targetLine - 1, targetLine + 1, targetLine + 2, editor.getCursor().line]
-                    .find(l => l >= 0 && l < editor.lineCount() && matches(editor.getLine(l)));
+                const matches = (txt) => {
+                    if (!txt) return false;
+                    return targetCandidates.length > 0 ? targetCandidates.some(c => txt.includes(c)) : ((embedSrc && txt.includes(embedSrc)) || (filename && txt.includes(filename)));
+                };
+
+                const candidateLines = [];
+                if (targetLine >= 0 && targetLine < editor.lineCount()) {
+                    candidateLines.push(targetLine);
+                    if (targetLine - 1 >= 0) candidateLines.push(targetLine - 1);
+                    if (targetLine + 1 < editor.lineCount()) candidateLines.push(targetLine + 1);
+                    if (targetLine + 2 < editor.lineCount()) candidateLines.push(targetLine + 2);
+                }
+                const curLine = editor.getCursor ? editor.getCursor().line : -1;
+                if (curLine >= 0 && curLine < editor.lineCount() && !candidateLines.includes(curLine)) {
+                    candidateLines.push(curLine);
+                }
+
+                let foundLine = candidateLines.find(l => matches(editor.getLine(l)));
 
                 if (foundLine === undefined && (embedSrc || filename)) {
                     for (let i = 0; i < editor.lineCount(); i++) {
@@ -3624,9 +3662,20 @@ class ImageToolkitPlugin extends obsidian.Plugin {
                 if (foundLine !== undefined) {
                     const lineText = editor.getLine(foundLine);
                     const prevCursor = editor.getCursor ? editor.getCursor() : null;
-                    if (/^\s*(!\[\[.*?\]\]|!\[.*?\]\(.*?\))\s*$/.test(lineText)) {
-                        const from = { line: foundLine, ch: 0 };
-                        const to = foundLine < editor.lineCount() - 1 ? { line: foundLine + 1, ch: 0 } : { line: foundLine, ch: lineText.length };
+
+                    if (singleIsolatedRegex.test(lineText)) {
+                        // The line contains ONLY this single target image embed and nothing else: remove whole line
+                        let from, to;
+                        if (foundLine < editor.lineCount() - 1) {
+                            from = { line: foundLine, ch: 0 };
+                            to = { line: foundLine + 1, ch: 0 };
+                        } else if (foundLine > 0) {
+                            from = { line: foundLine - 1, ch: editor.getLine(foundLine - 1).length };
+                            to = { line: foundLine, ch: lineText.length };
+                        } else {
+                            from = { line: foundLine, ch: 0 };
+                            to = { line: foundLine, ch: lineText.length };
+                        }
                         editor.replaceRange('', from, to);
                         if (editor.somethingSelected()) {
                             editor.setCursor(from);
@@ -3638,15 +3687,70 @@ class ImageToolkitPlugin extends obsidian.Plugin {
                             }
                         }
                     } else {
-                        const esc = (embedSrc || filename).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        const m = lineText.match(new RegExp(`!\\[\\[[^\\]]*${esc}[^\\]]*\\]\\]|!\\[[^\\]]*\\]\\([^)]*${esc}[^)]*\\)`));
-                        if (m) {
-                            const from = { line: foundLine, ch: m.index };
-                            editor.replaceRange('', from, { line: foundLine, ch: m.index + m[0].length });
+                        // Line contains multiple images or additional text: remove ONLY the specific matching embed
+                        const targetRegex = new RegExp(targetEmbedRegexStr, 'g');
+                        const tokenMatches = [];
+                        let match;
+                        while ((match = targetRegex.exec(lineText)) !== null) {
+                            tokenMatches.push({
+                                text: match[0],
+                                index: match.index,
+                                length: match[0].length
+                            });
+                        }
+
+                        // Fallback if strict escTargets didn't match: find any embed containing filename/embedSrc
+                        if (tokenMatches.length === 0) {
+                            const anyRegex = /!\[\[[^\]\r\n]+\]\]|!\[[^\\]\r\n]*\]\([^)\r\n]+\)/g;
+                            let m;
+                            while ((m = anyRegex.exec(lineText)) !== null) {
+                                if ((embedSrc && m[0].includes(embedSrc)) || (filename && m[0].includes(filename))) {
+                                    tokenMatches.push({ text: m[0], index: m.index, length: m[0].length });
+                                }
+                            }
+                        }
+
+                        if (tokenMatches.length > 0) {
+                            let chosen = tokenMatches[0];
+                            if (tokenMatches.length > 1) {
+                                let targetCh = -1;
+                                if (targetLine === foundLine && targetPos && typeof targetPos.ch === 'number') {
+                                    targetCh = targetPos.ch;
+                                } else if (prevCursor && prevCursor.line === foundLine) {
+                                    targetCh = prevCursor.ch;
+                                }
+                                if (targetCh >= 0) {
+                                    let bestDist = Infinity;
+                                    for (const tm of tokenMatches) {
+                                        const mid = tm.index + tm.length / 2;
+                                        const dist = Math.abs(mid - targetCh);
+                                        if (dist < bestDist) {
+                                            bestDist = dist;
+                                            chosen = tm;
+                                        }
+                                    }
+                                }
+                            }
+
+                            const from = { line: foundLine, ch: chosen.index };
+                            const to = { line: foundLine, ch: chosen.index + chosen.length };
+                            editor.replaceRange('', from, to);
+
                             if (editor.somethingSelected()) {
                                 editor.setCursor(from);
                             } else if (prevCursor) {
-                                editor.setCursor(prevCursor);
+                                if (prevCursor.line === foundLine) {
+                                    if (prevCursor.ch > chosen.index) {
+                                        editor.setCursor({
+                                            line: foundLine,
+                                            ch: Math.max(chosen.index, prevCursor.ch - chosen.length)
+                                        });
+                                    } else {
+                                        editor.setCursor(prevCursor);
+                                    }
+                                } else {
+                                    editor.setCursor(prevCursor);
+                                }
                             }
                         }
                     }
@@ -3663,16 +3767,30 @@ class ImageToolkitPlugin extends obsidian.Plugin {
                     return true;
                 }
             } else if (view.file && (embedSrc || filename)) {
-                const matches = (txt) => (embedSrc && txt.includes(embedSrc)) || (filename && txt.includes(filename));
+                const matches = (txt) => {
+                    if (!txt) return false;
+                    return targetCandidates.length > 0 ? targetCandidates.some(c => txt.includes(c)) : ((embedSrc && txt.includes(embedSrc)) || (filename && txt.includes(filename)));
+                };
                 this.app.vault.process(view.file, data => {
                     let removed = false;
-                    return data.split('\n').filter(l => {
+                    const lines = data.split('\n');
+                    const newLines = [];
+                    for (const l of lines) {
                         if (!removed && matches(l) && (l.includes('![[') || l.includes('!['))) {
-                            removed = true;
-                            return false;
+                            if (singleIsolatedRegex.test(l)) {
+                                removed = true;
+                                continue;
+                            }
+                            const m = l.match(new RegExp(targetEmbedRegexStr));
+                            if (m) {
+                                removed = true;
+                                newLines.push(l.slice(0, m.index) + l.slice(m.index + m[0].length));
+                                continue;
+                            }
                         }
-                        return true;
-                    }).join('\n');
+                        newLines.push(l);
+                    }
+                    return newLines.join('\n');
                 });
                 if (this.hoveredImg === targetImg) this.hoveredImg = null;
                 this.hideFloatingZoomBtn();
